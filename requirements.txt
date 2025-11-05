@@ -1,0 +1,17 @@
+flask
+geopandas
+rasterio
+folium
+branca
+joblib
+pandas
+pyyaml
+numpy
+planetary-computer
+pystac-client
+matplotlib
+Pillow
+SQLAlchemy
+GeoAlchemy2
+psycopg2-binary
+scikit-learn

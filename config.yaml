@@ -1,0 +1,50 @@
+# =========================
+# Web Application Settings
+# =========================
+server:
+  host: "0.0.0.0"
+  port: 5000
+
+# =========================
+# Database Settings (PostGIS)
+# =========================
+database:
+  host: "localhost"
+  port: 5433
+  dbname: "gisdb"
+  user: "postgres"
+  password: "postgres"
+  # Name of the table holding building footprints
+  footprints_table: "building_footprints" 
+  # Name of the geometry column in that table
+  geometry_column: "geom" 
+
+# =========================
+# Map & API Keys
+# =========================
+api_keys:
+  # Set your Planet API key here
+  planet_labs: "PLAK5ed2497613574439b22434afada7579d" # (Optional)
+
+# =========================
+# Prediction Model Settings
+# =========================
+prediction:
+  # Path to your trained model file
+  model_path: "data/artifacts/random_forest.joblib"
+
+  # Path to the *original* training data CSV (e.g., data/training/training.csv)
+  # The R script needs this for DI/LPD comparison.
+  original_training_data_csv: "data/training/training.csv"
+
+  # Buffer (in meters) around the selected building to run prediction
+  buffer_m: 100
+
+  # Minimum building area (sq. meters) to be selectable
+  min_building_area_sqm: 1000
+
+  # STAC settings for Sentinel data
+  stac_api: "https://planetarycomputer.microsoft.com/api/stac/v1"
+  collection: "sentinel-2-l2a"
+  date_range: "2025-01-01/2025-09-10"
+  cloud_cover: 20

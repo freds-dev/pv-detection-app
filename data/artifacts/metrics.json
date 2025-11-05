@@ -1,0 +1,14 @@
+{
+  "roc_auc": 0.9938636234781985,
+  "average_precision": 0.9937513968651235,
+  "f1_score": 0.9624445336365867,
+  "confusion_matrix": {
+    "tn": 171499,
+    "fp": 7391,
+    "fn": 6083,
+    "tp": 172651
+  },
+  "threshold": 0.5662155855162111,
+  "n_training_samples": 1430496,
+  "n_validation_samples": 357624
+}
