@@ -87,7 +87,6 @@ def find_building():
         tbl = db_cfg['footprints_table']
         geom_col = db_cfg['geometry_column']
 
-        # --- START: THE FIX ---
         # We run TWO fast queries instead of ONE slow one.
 
         with ENGINE.connect() as conn:
@@ -120,8 +119,6 @@ def find_building():
                 {"point_wkt": clicked_point_wkt, "native_srid": native_srid}
             )
             row = result.fetchone()
-
-        # --- END: THE FIX ---
 
         if row:
             return jsonify({"status": "success", "building": row[0]})
@@ -216,9 +213,6 @@ def predict():
 
         # --- Run R Script for DI/LPD ---
         try:
-            # --- START: NEW SIMPLIFIED CODE ---
-            # We just need to create 4 files in the session root dir
-
             # 1. Save the ON-THE-FLY prediction features
             prediction_features_path = os.path.join(
                 r_script_dir, "prediction_features.csv")

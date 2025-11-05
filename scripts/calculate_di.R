@@ -1,7 +1,5 @@
 # -----------------------------------------------------------------------------
 # Calculate Dissimilarity Index (DI) and Local Data Point Density (LPD)
-# FINAL VERSION: This script now filters training columns to match prediction
-# columns, ensuring compatibility with the aoa() function.
 # -----------------------------------------------------------------------------
 
 # --- 1. Load Libraries ---
@@ -48,15 +46,10 @@ message("--- END: Data Loading ---\n")
 # --- 4. Train Model for Feature Space Context ---
 # -----------------------------------------------------------------------------
 
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# !! CRITICAL: YOU MUST EDIT THIS LINE !!
-# !! Replace 'label' with the name of the column in your training_data.csv
-# !! that contains your actual 0/1 labels.
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-outcome_col <- "label" # <-- EDIT THIS "label"
+outcome_col <- "label"
 
 
-# --- NEW: Filter training data to match prediction data ---
+# --- Filter training data to match prediction data ---
 # This is the key fix. It ensures the model is trained on *only*
 # the features that exist in the prediction data.
 
@@ -80,7 +73,6 @@ if (nrow(training_data_filtered) > max_train_samples) {
 } else {
   training_data_sampled <- training_data_filtered
 }
-# --- END: Subsample ---
 
 
 message("--- START: Context Model Training ---")
