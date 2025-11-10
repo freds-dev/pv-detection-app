@@ -59,17 +59,14 @@
       .leaflet-popup-content {
         text-align: center;
       }
-      #run-prediction-btn {
-        background-color: #007bff;
-        color: white;
+      /* Removed the old run-prediction-btn styles, added style for the permanent one */
+      #persistent-run-prediction-btn {
         border: none;
         padding: 8px 12px;
         border-radius: 4px;
         cursor: pointer;
         font-weight: bold;
-      }
-      #run-prediction-btn:hover {
-        background-color: #0056b3;
+        transition: background-color 0.3s;
       }
 
       #loader-overlay {
@@ -104,7 +101,7 @@
       }
     </style>
   </head>
-  <body data-config='{{ config|tojson|safe }}'>
+  <body data-config='{{ config|tojson|safe }}''>
     <div id="loader-overlay">
       <div class="loader-box">
         <div class="loader"></div>
@@ -115,303 +112,317 @@
     <div id="map"></div>
 
     <script>
-      // --- Pass Config from Flask ---
-      const configJson = document.body.dataset.config;
-      const APP_CONFIG = JSON.parse(configJson);
+    // --- Pass Config from Flask ---
+    const configJson = document.body.dataset.config;
+    const APP_CONFIG = JSON.parse(configJson);
 
-      // --- Map Initialization ---
-      const map = L.map("map").setView([51.9607, 7.6261], 14);
+    // --- Map Initialization ---
+    const map = L.map("map").setView([51.9607, 7.6261], 14);
 
-      // --- Basemap Layers ---
-      const osm = L.tileLayer(
+    // --- Basemap Layers ---
+    const osm = L.tileLayer(
         "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         {
-          attribution:
-            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            attribution:
+                '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         }
-      );
+    );
 
-      const light = L.tileLayer(
+    const light = L.tileLayer(
         "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
         {
-          attribution:
-            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            attribution:
+                '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
         }
-      );
+    );
 
-      const googleSatellite = L.tileLayer(
+    const googleSatellite = L.tileLayer(
         "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
         {
-          attribution: "Google",
-          name: "Google Satellite",
+            attribution: "Google",
+            name: "Google Satellite",
         }
-      ).addTo(map); // Default
+    ).addTo(map); // Default
 
-      const basemaps = {
+    const basemaps = {
         "Google Satellite": googleSatellite,
         OpenStreetMap: osm,
         "Light Basemap": light,
-      };
+    };
 
-      if (
+    if (
         APP_CONFIG.planet_api_key &&
         APP_CONFIG.planet_api_key !== "YOUR_PLANET_API_KEY_HERE"
-      ) {
+    ) {
         const planetTilesUrl = `https://tiles.planet.com/basemaps/v1/planet-tiles/global_monthly_2025_08_mosaic/gmap/{z}/{x}/{y}.png?api_key=${APP_CONFIG.planet_api_key}`;
         const planet = L.tileLayer(planetTilesUrl, {
-          attribution: "Planet Labs",
+            attribution: "Planet Labs",
         });
         basemaps["Planet Monthly"] = planet;
-      }
+    }
 
-      // --- Layer Control ---
-      const overlayLayers = {};
-      const layerControl = L.control
+    // --- Layer Control ---
+    const overlayLayers = {};
+    let layerControl = L.control
         .layers(basemaps, overlayLayers, {
-          collapsed: false,
+            collapsed: false,
         })
         .addTo(map);
 
-      // --- Geocoding Search ---
-      L.Control.geocoder({
+    // --- Geocoding Search ---
+    L.Control.geocoder({
         defaultMarkGeocode: false,
-      })
+    })
         .on("markgeocode", function (e) {
-          const latlng = e.geocode.center;
-          map.setView(latlng, 18);
-          handleMapInteraction(latlng);
+            const latlng = e.geocode.center;
+            map.setView(latlng, 18);
+            // When searching, we treat it as a single selection
+            handleMapInteraction(latlng, false);
         })
         .addTo(map);
 
-      // --- NEW CHANGE 1: Global Event Listener (Event Delegation) ---
-      // This solves all race conditions for the "Run Prediction" button.
-      // We attach ONE listener to the whole document.
-      document.addEventListener("click", function (e) {
-        // Check if the element that was clicked has the ID we're looking for
-        if (e.target && e.target.id === "run-prediction-btn") {
-          // We found it! Run the prediction.
-          console.log("Global listener caught 'run-prediction-btn' click.");
-          runPrediction();
+    // --- Global State Variables for MULTI-SELECTION ---
+    let selectedBuildingGeoJSONs = []; // Array to hold all selected GeoJSON features
+    let buildingMarkers = L.featureGroup().addTo(map); // A layer group for all selected building polygons
+
+    // NEW: Object to hold the master LayerGroup for each type (e.g., pv_probability, dissimilarity_index)
+    let predictionLayerGroups = {};
+    let currentPredictionLayerControlEntries = [];
+
+    // --- Abort Controllers for canceling requests ---
+    let findBuildingController = new AbortController();
+    let runPredictionController = new AbortController();
+
+    // --- Persistent Control Button ---
+    const predictionControl = L.control({ position: "topright" });
+
+    predictionControl.onAdd = function (map) {
+        const div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
+        div.innerHTML = `
+            <button id="persistent-run-prediction-btn" style="background-color: #ccc;" disabled>
+                Run 0 Predictions
+            </button>
+        `;
+        // Prevent map click propagation on the button
+        L.DomEvent.disableClickPropagation(div);
+        // Bind the new prediction function
+        L.DomEvent.on(div.querySelector("button"), "click", runAllPredictions);
+        return div;
+    };
+    predictionControl.addTo(map);
+
+    // Function to update the button state
+    function updatePredictionButton() {
+        const btn = document.getElementById("persistent-run-prediction-btn");
+        const count = selectedBuildingGeoJSONs.length;
+
+        btn.textContent = `Run ${count} Prediction${count === 1 ? "" : "s"}`;
+
+        if (count > 0) {
+            btn.style.backgroundColor = "#007bff";
+            btn.style.color = "white";
+            btn.style.cursor = "pointer";
+            btn.disabled = false;
+        } else {
+            btn.style.backgroundColor = "#ccc";
+            btn.style.color = "black";
+            btn.style.cursor = "not-allowed";
+            btn.disabled = true;
         }
-      });
-      // --- END NEW CHANGE 1 ---
+    }
+    updatePredictionButton(); // Initialize button state
 
-      // --- Global State Variables ---
-      let currentMarker = null;
-      let currentBuildingLayer = null;
-      let currentPredictionLayers = [];
-      let currentBuildingGeoJSON = null;
 
-      // --- Abort Controllers for canceling requests ---
-      let findBuildingController = new AbortController();
-      let runPredictionController = new AbortController();
+    // --- Map Interaction ---
+    map.on("click", function (e) {
+        // Check if the Shift key was held down
+        const multiSelect = e.originalEvent.shiftKey;
+        handleMapInteraction(e.latlng, multiSelect);
+    });
 
-      // --- Map Interaction ---
-      map.on("click", function (e) {
-        handleMapInteraction(e.latlng);
-      });
+    async function handleMapInteraction(latlng, multiSelect) {
+        // --- Clear previous selection only if NOT multi-select (Shift key is NOT held) ---
+        if (!multiSelect) {
+            selectedBuildingGeoJSONs = [];
+            buildingMarkers.clearLayers(); // Clear all selected buildings
+        }
 
-      async function handleMapInteraction(latlng) {
         // --- Cancel any pending find_building request ---
         findBuildingController.abort();
         findBuildingController = new AbortController();
         const findBuildingSignal = findBuildingController.signal;
 
-        // 1. Clear old marker and building
-        if (currentMarker) {
-          map.removeLayer(currentMarker);
-        }
-        if (currentBuildingLayer) {
-          map.removeLayer(currentBuildingLayer);
-        }
-
-        // 2. Add new marker
-        currentMarker = L.marker(latlng).addTo(map);
-
-        // 3. Show loading popup
-        currentMarker
-          .bindPopup("<b>Finding closest building...</b>")
-          .openPopup();
-
-        // 4. Call backend to find building
+        // 2. Call backend to find building
         try {
-          const response = await fetch("/api/find_building", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ lat: latlng.lat, lon: latlng.lng }),
-            signal: findBuildingSignal, // --- Pass the abort signal
-          });
+            const response = await fetch("/api/find_building", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ lat: latlng.lat, lon: latlng.lng }),
+                signal: findBuildingSignal, // --- Pass the abort signal
+            });
 
-          if (!response.ok) {
-            currentMarker.setPopupContent("<b>No building found.</b>");
-            return;
-          }
+            const data = await response.json();
+            const newBuildingGeoJSON = data.building;
 
-          const data = await response.json();
-          currentBuildingGeoJSON = data.building;
+            // 3. Add to selection
+            selectedBuildingGeoJSONs.push(newBuildingGeoJSON);
 
-          // 5. Display found building
-          currentBuildingLayer = L.geoJSON(data.building, {
-            style: {
-              color: "#ffff00", // Yellow
-              weight: 2,
-              opacity: 1,
-              fillOpacity: 0.3,
-            },
-          }).addTo(map);
+            // 4. Display found building
+            const newBuildingLayer = L.geoJSON(newBuildingGeoJSON, {
+                style: {
+                    color: "#ff00ff", // Magenta for selected buildings
+                    weight: 3,
+                    opacity: 1,
+                    fillOpacity: 0.3,
+                },
+            }).addTo(buildingMarkers); // Add to the feature group
 
-          map.fitBounds(currentBuildingLayer.getBounds().pad(0.1));
+            updatePredictionButton();
 
-          // 6. Update popup with "Run Prediction" button
-          const popupContent = `
-                    <b>Building found!</b><br>
-                    Run prediction for this building?
-                    <br><br>
-                    <button id="run-prediction-btn">Run Prediction</button>
-                `;
-
-          // --- NEW CHANGE 2: Simplified Content Update ---
-          // We just set the content. The global listener
-          // (added above) will handle the click.
-          currentMarker.setPopupContent(popupContent);
-          // --- END NEW CHANGE 2 ---
+            // 7. Map view is NOT fitted to avoid jumpiness
         } catch (error) {
-          // --- Check if the error was an intentional abort ---
-          if (error.name === "AbortError") {
-            console.log("Find building request was aborted.");
-            return;
-          }
-          // Handle real errors
-          console.error("Error finding building:", error);
-          currentMarker.setPopupContent("<b>Error finding building.</b>");
+            // --- Check if the error was an intentional abort ---
+            if (error.name === "AbortError") {
+                console.log("Find building request was aborted.");
+                return;
+            }
         }
-      }
+    }
 
-      async function runPrediction() {
-        if (!currentBuildingGeoJSON) return;
+    // --- Sequential Prediction Function for Multiple Buildings ---
+    async function runAllPredictions() {
+        if (selectedBuildingGeoJSONs.length === 0) return;
 
-        // --- Cancel any pending prediction request ---
+        // 1. Setup and clear
+        const overlay = document.getElementById("loader-overlay");
+        overlay.style.display = "flex";
+        const loaderText = document.getElementById("loader-text");
+
+        // Cancel any pending prediction request (just in case)
         runPredictionController.abort();
         runPredictionController = new AbortController();
         const runPredictionSignal = runPredictionController.signal;
 
-        // Get and show the loader
-        const overlay = document.getElementById("loader-overlay");
-        overlay.style.display = "flex";
-
-        if (currentMarker) {
-          currentMarker.closePopup();
-        }
-
-        // 2. Clear old prediction layers
-        currentPredictionLayers.forEach((layer) => {
-          map.removeLayer(layer);
-          layerControl.removeLayer(layer);
+        // Clear old prediction layers from map and control
+        currentPredictionLayerControlEntries.forEach(layer => {
+            layerControl.removeLayer(layer);
+            map.removeLayer(layer); // Ensure all master groups are removed
         });
-        currentPredictionLayers = [];
+        currentPredictionLayerControlEntries = [];
+        predictionLayerGroups = {};
 
+        // Clear all building markers from the map
+        buildingMarkers.clearLayers();
+
+        let allBounds = []; // To collect bounds for final map fit
+
+        // 2. Loop through all selected buildings
         try {
-          // 3. Call prediction API
-          const response = await fetch("/api/predict", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ building_geojson: currentBuildingGeoJSON }),
-            signal: runPredictionSignal, // --- Pass the abort signal
-          });
+            for (let i = 0; i < selectedBuildingGeoJSONs.length; i++) {
+                const buildingGeoJSON = selectedBuildingGeoJSONs[i];
+                loaderText.textContent = `Running prediction ${i + 1} of ${
+                    selectedBuildingGeoJSONs.length
+                }...`;
 
-          if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.message || "Prediction failed.");
-          }
+                // 3. Call prediction API for the single building
+                const response = await fetch("/api/predict", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ building_geojson: buildingGeoJSON }),
+                    signal: runPredictionSignal,
+                });
 
-          const data = await response.json();
+                if (!response.ok) {
+                    const err = await response.json();
+                    console.error(`Prediction ${i + 1} failed: ${err.message}`);
+                    continue; // Continue to next building if one fails
+                }
 
-          // --- Remove the click marker ---
-          if (currentMarker) {
-            map.removeLayer(currentMarker);
-            currentMarker = null; // Clear the reference
-          }
+                const data = await response.json();
 
-          // --- Remove the yellow building polygon ---
-          if (currentBuildingLayer) {
-            map.removeLayer(currentBuildingLayer);
-            currentBuildingLayer = null; // Clear the reference
-          }
+                // 4. Add new layers to the master LayerGroups
+                const bounds = data.bounds; // [[miny, minx], [maxy, maxx]]
+                allBounds.push(bounds);
+                
+                // Add all returned layers
+                for (const key in data.layers) {
+                    const url = data.layers[key];
+                    
+                    // Initialize the master LayerGroup if it doesn't exist
+                    if (!predictionLayerGroups[key]) {
+                        predictionLayerGroups[key] = L.layerGroup();
+                    }
 
-          // 4. Add new layers to map
-          const bounds = data.bounds;
+                    const newLayer = L.imageOverlay(url, bounds, {
+                        opacity: key.includes("color") ? 1.0 : 0.8,
+                        interactive: true,
+                        className: "leaflet-overlay-pixelated",
+                    });
 
-          if (data.layers.pv_probability) {
-            const probLayer = L.imageOverlay(
-              data.layers.pv_probability,
-              bounds,
-              {
-                opacity: 0.8,
-                interactive: true,
-                className: "leaflet-overlay-pixelated",
-              }
-            ).addTo(map);
-            layerControl.addOverlay(probLayer, "PV Probability");
-            currentPredictionLayers.push(probLayer);
-          }
+                    // Add the new building-specific image overlay to its master group
+                    predictionLayerGroups[key].addLayer(newLayer);
+                }
+            } // End of loop
 
-          if (data.layers.dissimilarity_index) {
-            const diLayer = L.imageOverlay(
-              data.layers.dissimilarity_index,
-              bounds,
-              {
-                opacity: 0.8,
-                interactive: true,
-                className: "leaflet-overlay-pixelated",
-              }
-            );
-            layerControl.addOverlay(diLayer, "Dissimilarity Index");
-            currentPredictionLayers.push(diLayer);
-          }
+            // 5. Update Layer Control (only once after the loop)
+            let firstLayerKey = null;
 
-          if (data.layers.local_point_density) {
-            const lpdLayer = L.imageOverlay(
-              data.layers.local_point_density,
-              bounds,
-              {
-                opacity: 0.8,
-                interactive: true,
-                className: "leaflet-overlay-pixelated",
-              }
-            );
-            layerControl.addOverlay(lpdLayer, "Local Point Density");
-            currentPredictionLayers.push(lpdLayer);
-          }
+            for (const key in predictionLayerGroups) {
+                const layerGroup = predictionLayerGroups[key];
+                
+                // Clean up key name for display
+                const displayName = key
+                    .replace(/_/g, " ")
+                    .replace(/\b\w/g, (c) => c.toUpperCase());
+                
+                layerControl.addOverlay(layerGroup, displayName);
+                currentPredictionLayerControlEntries.push(layerGroup);
 
-          if (data.layers.sentinel_true_color) {
-            const sentinelLayer = L.imageOverlay(
-              data.layers.sentinel_true_color,
-              bounds,
-              {
-                opacity: 1.0,
-                interactive: true,
-                className: "leaflet-overlay-pixelated",
-              }
-            );
-            layerControl.addOverlay(sentinelLayer, "Sentinel True Color");
-            currentPredictionLayers.push(sentinelLayer);
-          }
+                // Set 'pv_probability' to be checked (added to map) by default
+                if (key === 'pv_probability') {
+                    layerGroup.addTo(map);
+                    firstLayerKey = key; // Keep track for map fitting if needed
+                }
+            }
 
-          // 5. Update map view
-          map.fitBounds(bounds);
+            // 6. Fit map to encompassing bounds of all predictions
+            if (allBounds.length > 0) {
+                // Calculate the union of all bounding boxes
+                let minX = allBounds[0][0][1];
+                let minY = allBounds[0][0][0];
+                let maxX = allBounds[0][1][1];
+                let maxY = allBounds[0][1][0];
+
+                allBounds.forEach(b => {
+                    minY = Math.min(minY, b[0][0]);
+                    minX = Math.min(minX, b[0][1]);
+                    maxY = Math.max(maxY, b[1][0]);
+                    maxX = Math.max(maxX, b[1][1]);
+                });
+
+                const unifiedBounds = L.latLngBounds([
+                    [minY, minX],
+                    [maxY, maxX]
+                ]);
+                map.fitBounds(unifiedBounds);
+            }
+
+            // Clear selection state after successful prediction run
+            selectedBuildingGeoJSONs = [];
+            updatePredictionButton();
         } catch (error) {
-          // --- Check for abort error ---
-          if (error.name === "AbortError") {
-            console.log("Prediction request was aborted.");
-            return;
-          }
-          console.error("Error running prediction:", error);
-          alert(`Prediction Failed:\n${error.message}`);
+            if (error.name === "AbortError") {
+                console.log("Prediction run was aborted.");
+                return;
+            }
+            console.error("Error running predictions:", error);
+            alert(`Prediction Failed:\n${error.message}`);
         } finally {
-          // This always runs, even if aborted
-          overlay.style.display = "none";
+            // This always runs, even if aborted
+            overlay.style.display = "none";
+            loaderText.textContent = "Running prediction..."; // Reset text
         }
-      }
-    </script>
+    }
+</script>
   </body>
 </html>
