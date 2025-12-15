@@ -133,11 +133,14 @@ def find_building():
 @app.route('/api/predict', methods=['POST'])
 def predict():
     """
-    Runs the full prediction pipeline for a given building geometry.
+    Runs prediction. Optionally calculates uncertainty (DI/LPD) based on user flag.
     """
     try:
         data = request.json
         building_geojson = data['building_geojson']
+        # Default to True if not provided, or strictly follow the frontend
+        calculate_uncertainty = data.get('calculate_uncertainty', True)
+
         building_geom = shape(building_geojson['geometry'])
 
         # --- Setup ---
@@ -149,9 +152,9 @@ def predict():
         r_script_path = os.path.abspath("scripts/calculate_di.R")
 
         pred_cfg = CFG['prediction']
-        target_epsg = 3857  # Use a standard metric CRS
+        target_epsg = 3857
 
-        # 1. Create AOI from building + buffer
+        # 1. Create AOI
         gdf_aoi, bbox_target, bbox_4326 = pu.get_aoi_from_building_geom(
             building_geom, target_epsg, pred_cfg['buffer_m']
         )
@@ -162,46 +165,55 @@ def predict():
         # 3. Read Sentinel Bands
         stac_bands = sorted(set(getattr(MODEL, "feature_names_in_", [])) | {
                             "B04", "B03", "B02"})
-        stac_bands = [b for b in stac_bands if b not in [
-            'x', 'y']]  # Remove non-band features
+        stac_bands = [b for b in stac_bands if b not in ['x', 'y']]
 
         band_arrays, transform, dst_crs = pu.read_bands_to_grid(
             stac_item, stac_bands, bbox_target, target_epsg, resolution=10.0
         )
         H, W = next(iter(band_arrays.values())).shape
 
-        # 4. Create Building Mask (only for the selected building)
+        # 4. Create Building Mask
         building_gdf = gpd.GeoDataFrame(
             [{'geometry': building_geom}], crs=4326)
         building_mask = pu.create_building_mask(
             building_gdf, transform, (H, W), dst_crs)
 
-        # 5. Assemble Features
+        # 5. Assemble Features & Predict
         X, feature_names = pu.assemble_features(MODEL, band_arrays)
-
-        # 6. Run Prediction
         proba, pred = pu.predict_mask(MODEL, pd.DataFrame(
             X, columns=feature_names), (H, W), THRESHOLD)
 
-        # 7. Mask predictions to building footprint
+        # 6. Apply Mask to Visuals
         proba[building_mask == 0] = np.nan
         pred[building_mask == 0] = 0
 
-        # 8. Save output PNGs for map layers
+        # --- 90th Percentile Classification ---
+        valid_pixels = proba[building_mask == 1]
+        valid_pixels = valid_pixels[~np.isnan(valid_pixels)]
+
+        if len(valid_pixels) == 0:
+            pv_score = 0.0
+        else:
+            pv_score = float(np.percentile(valid_pixels, 90))
+
+        is_pv = pv_score >= 0.5
+        cls_text = "PV Detected" if is_pv else "No PV Detected"
+        # --------------------------------------
+
+        # 7. Save Standard Visual Layers
         layer_urls = {}
         png_bounds = tuple(gpd.GeoSeries(
             gdf_aoi, crs=target_epsg).to_crs(4326).total_bounds)
         png_bounds_leaflet = [[png_bounds[1], png_bounds[0]], [
-            png_bounds[3], png_bounds[2]]]  # [[miny, minx], [maxy, maxx]]
+            png_bounds[3], png_bounds[2]]]
 
-        # --- Save Layers ---
         try:
             heat_png_name = "pv_probability.png"
             heat_png_path = os.path.join(results_dir, heat_png_name)
             pu.save_png_heatmap(proba, heat_png_path)
             layer_urls['pv_probability'] = f"/{results_dir}/{heat_png_name}"
         except Exception as e:
-            LOGGER.warning(f"Failed to create heatmap PNG: {e}")
+            LOGGER.warning(f"Failed to create heatmap: {e}")
 
         try:
             rgb_png_name = "sentinel_true_color.png"
@@ -209,82 +221,76 @@ def predict():
             pu.save_png_rgb(band_arrays, rgb_png_path)
             layer_urls['sentinel_true_color'] = f"/{results_dir}/{rgb_png_name}"
         except Exception as e:
-            LOGGER.warning(f"Failed to create Sentinel RGB PNG: {e}")
+            LOGGER.warning(f"Failed to create RGB: {e}")
 
-        # --- Run R Script for DI/LPD ---
-        try:
-            # 1. Save the ON-THE-FLY prediction features
-            prediction_features_path = os.path.join(
-                r_script_dir, "prediction_features.csv")
-            pd.DataFrame(X, columns=feature_names).to_csv(
-                prediction_features_path, index=False)
-
-            # 2. Save the ON-THE-FLY building mask
-            mask_path = os.path.join(r_script_dir, "building_mask.tif")
-            with rasterio.open(
-                mask_path, 'w', driver='GTiff', height=H, width=W, count=1,
-                dtype=building_mask.dtype, crs=dst_crs, transform=transform
-            ) as dst:
-                dst.write(building_mask, 1)
-
-            # 3. Save the ON-THE-FLY spatial metadata
-            meta_path = os.path.join(r_script_dir, "spatial_meta.json")
-            with open(meta_path, "w") as f:
-                json.dump({"height": H, "width": W, "crs_wkt": dst_crs.to_wkt(),
-                          "transform": transform.to_gdal()}, f)
-
-            # 4. Find and copy the ORIGINAL training data (features + labels)
+        # --- 8. CONDITIONAL Uncertainty Estimation (DI/LPD) ---
+        if calculate_uncertainty:
             try:
-                # Use the new config path name
-                source_data_path = CFG['prediction']['original_training_data_csv']
-                dest_data_path = os.path.join(
-                    r_script_dir, "training_data.csv")
+                # Prepare data for R script
+                prediction_features_path = os.path.join(
+                    r_script_dir, "prediction_features.csv")
+                pd.DataFrame(X, columns=feature_names).to_csv(
+                    prediction_features_path, index=False)
 
-                if not os.path.exists(source_data_path):
-                    raise FileNotFoundError(
-                        f"Original training data not found at: {source_data_path}")
+                mask_path = os.path.join(r_script_dir, "building_mask.tif")
+                with rasterio.open(
+                    mask_path, 'w', driver='GTiff', height=H, width=W, count=1,
+                    dtype=building_mask.dtype, crs=dst_crs, transform=transform
+                ) as dst:
+                    dst.write(building_mask, 1)
 
-                shutil.copyfile(source_data_path, dest_data_path)
-                LOGGER.info(
-                    f"Copied original training data to {dest_data_path}")
+                meta_path = os.path.join(r_script_dir, "spatial_meta.json")
+                with open(meta_path, "w") as f:
+                    json.dump({"height": H, "width": W, "crs_wkt": dst_crs.to_wkt(),
+                               "transform": transform.to_gdal()}, f)
 
-            except KeyError:
-                LOGGER.error(
-                    "CRITICAL: 'original_training_data_csv' not defined in config.yaml. DI/LPD will fail.")
-                raise
+                try:
+                    source_data_path = CFG['prediction']['original_training_data_csv']
+                    dest_data_path = os.path.join(
+                        r_script_dir, "training_data.csv")
+                    if not os.path.exists(source_data_path):
+                        LOGGER.warning(
+                            f"Training data missing: {source_data_path}. Skipping DI.")
+                        di_lpd_available = False
+                    else:
+                        shutil.copyfile(source_data_path, dest_data_path)
+                        # Run R script
+                        di_lpd_available = pu.run_r_script(
+                            r_script_path, r_script_dir)
+                except Exception as e:
+                    LOGGER.error(f"Error prepping DI data: {e}")
+                    di_lpd_available = False
+
+                if di_lpd_available:
+                    di_tif_path = os.path.join(r_script_dir, "aoi_di.tif")
+                    di_png_name = "dissimilarity_index.png"
+                    di_png_path = os.path.join(results_dir, di_png_name)
+                    pu.save_geotiff_as_colored_png(
+                        di_tif_path, di_png_path, "RdYlGn_r", "DI")
+                    layer_urls['dissimilarity_index'] = f"/{results_dir}/{di_png_name}"
+
+                    lpd_tif_path = os.path.join(r_script_dir, "aoi_lpd.tif")
+                    lpd_png_name = "local_point_density.png"
+                    lpd_png_path = os.path.join(results_dir, lpd_png_name)
+                    pu.save_geotiff_as_colored_png(
+                        lpd_tif_path, lpd_png_path, "RdYlGn", "LPD")
+                    layer_urls['local_point_density'] = f"/{results_dir}/{lpd_png_name}"
+
             except Exception as e:
-                LOGGER.error(f"Failed to copy training data: {e}")
-                raise
-            # --- END OF NEW CODE ---
+                LOGGER.error(f"Failed to run R script: {e}", exc_info=True)
+        else:
+            LOGGER.info("Skipping Uncertainty Estimation (User Request)")
 
-            LOGGER.info(f"Running R script in {r_script_dir}...")
-            di_lpd_available = pu.run_r_script(r_script_path, r_script_dir)
-
-            if di_lpd_available:
-                # The new R script outputs to the root, so these paths are correct
-                di_tif_path = os.path.join(r_script_dir, "aoi_di.tif")
-                di_png_name = "dissimilarity_index.png"
-                di_png_path = os.path.join(results_dir, di_png_name)
-                pu.save_geotiff_as_colored_png(
-                    di_tif_path, di_png_path, "RdYlGn_r", "DI")
-                layer_urls['dissimilarity_index'] = f"/{results_dir}/{di_png_name}"
-
-                lpd_tif_path = os.path.join(r_script_dir, "aoi_lpd.tif")
-                lpd_png_name = "local_point_density.png"
-                lpd_png_path = os.path.join(results_dir, lpd_png_name)
-                pu.save_geotiff_as_colored_png(
-                    lpd_tif_path, lpd_png_path, "RdYlGn", "LPD")
-                layer_urls['local_point_density'] = f"/{results_dir}/{lpd_png_name}"
-
-        except Exception as e:
-            LOGGER.error(
-                f"Failed to run R script or generate DI/LPD layers: {e}", exc_info=True)
-
-        # 9. Return paths to frontend
+        # 9. Return JSON
         return jsonify({
             "status": "success",
             "layers": layer_urls,
-            "bounds": png_bounds_leaflet
+            "bounds": png_bounds_leaflet,
+            "classification": {
+                "is_pv": is_pv,
+                "score": round(pv_score, 3),
+                "text": cls_text
+            }
         })
 
     except Exception as e:
