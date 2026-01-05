@@ -1,14 +1,12 @@
 {
-  "roc_auc": 0.9938636234781985,
-  "average_precision": 0.9937513968651235,
-  "f1_score": 0.9624445336365867,
+  "roc_auc": 0.9308218100147269,
+  "average_precision": 0.942455509107623,
+  "f1_score": 0.8633657883807854,
   "confusion_matrix": {
-    "tn": 171499,
-    "fp": 7391,
-    "fn": 6083,
-    "tp": 172651
+    "tn": 7498,
+    "fp": 1626,
+    "fn": 1335,
+    "tp": 9355
   },
-  "threshold": 0.5662155855162111,
-  "n_training_samples": 1430496,
-  "n_validation_samples": 357624
+  "threshold": 0.4825
 }

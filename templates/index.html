@@ -97,7 +97,7 @@
         image-rendering: -moz-crisp-edges;
       }
 
-      /* New style for the classification tooltip */
+      /* Style for the classification tooltip */
       .classification-tooltip {
         background: rgba(255, 255, 255, 0.95);
         border: 1px solid #ccc;
@@ -148,7 +148,7 @@
           attribution: "Google",
           name: "Google Satellite",
         }
-      ).addTo(map); // Default
+      ).addTo(map);
 
       const basemaps = {
         "Google Satellite": googleSatellite,
@@ -182,20 +182,17 @@
         .on("markgeocode", function (e) {
           const latlng = e.geocode.center;
           map.setView(latlng, 18);
-          // When searching, we treat it as a single selection
           handleMapInteraction(latlng, false);
         })
         .addTo(map);
 
-      // --- Global State Variables for MULTI-SELECTION ---
-      let selectedBuildingGeoJSONs = []; // Array to hold all selected GeoJSON features
-      let buildingMarkers = L.featureGroup().addTo(map); // A layer group for all selected building polygons AND prediction markers
+      // --- Global State Variables ---
+      let selectedBuildingGeoJSONs = [];
+      let buildingMarkers = L.featureGroup().addTo(map);
 
-      // NEW: Object to hold the master LayerGroup for each type (e.g., pv_probability, dissimilarity_index)
       let predictionLayerGroups = {};
       let currentPredictionLayerControlEntries = [];
 
-      // --- Abort Controllers for canceling requests ---
       let findBuildingController = new AbortController();
       let runPredictionController = new AbortController();
 
@@ -204,7 +201,6 @@
 
       predictionControl.onAdd = function (map) {
         const div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
-        // We use a flexbox layout to align the checkbox and button nicely
         div.style.backgroundColor = "white";
         div.style.padding = "5px";
         div.style.display = "flex";
@@ -214,16 +210,13 @@
         div.innerHTML = `
             <div style="display: flex; align-items: center; gap: 5px; font-size: 12px; margin-bottom: 3px;">
                 <input type="checkbox" id="uncertainty-toggle" checked>
-                <label for="uncertainty-toggle" style="cursor: pointer;">Calc Uncertainty</label>
+                <label for="uncertainty-toggle" style="cursor: pointer;">Calc Uncertainty (DI/LPD)</label>
             </div>
             <button id="persistent-run-prediction-btn" style="background-color: #ccc; width: 100%;" disabled>
                 Run 0 Predictions
             </button>
         `;
-        // Prevent map click propagation on the div
         L.DomEvent.disableClickPropagation(div);
-
-        // Bind the new prediction function
         L.DomEvent.on(
           div.querySelector("#persistent-run-prediction-btn"),
           "click",
@@ -233,11 +226,9 @@
       };
       predictionControl.addTo(map);
 
-      // Function to update the button state
       function updatePredictionButton() {
         const btn = document.getElementById("persistent-run-prediction-btn");
         const count = selectedBuildingGeoJSONs.length;
-
         btn.textContent = `Run ${count} Prediction${count === 1 ? "" : "s"}`;
 
         if (count > 0) {
@@ -252,97 +243,78 @@
           btn.disabled = true;
         }
       }
-      updatePredictionButton(); // Initialize button state
+      updatePredictionButton();
 
       // --- Map Interaction ---
       map.on("click", function (e) {
-        // Check if the Shift key was held down
         const multiSelect = e.originalEvent.shiftKey;
         handleMapInteraction(e.latlng, multiSelect);
       });
 
       async function handleMapInteraction(latlng, multiSelect) {
-        // --- Clear previous selection only if NOT multi-select (Shift key is NOT held) ---
         if (!multiSelect) {
           selectedBuildingGeoJSONs = [];
-          buildingMarkers.clearLayers(); // Clear all selected buildings and previous result labels
+          buildingMarkers.clearLayers();
         }
 
-        // --- Cancel any pending find_building request ---
         findBuildingController.abort();
         findBuildingController = new AbortController();
         const findBuildingSignal = findBuildingController.signal;
 
-        // 2. Call backend to find building
         try {
           const response = await fetch("/api/find_building", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ lat: latlng.lat, lon: latlng.lng }),
-            signal: findBuildingSignal, // --- Pass the abort signal
+            signal: findBuildingSignal,
           });
 
           const data = await response.json();
           const newBuildingGeoJSON = data.building;
 
-          // 3. Add to selection
           selectedBuildingGeoJSONs.push(newBuildingGeoJSON);
 
-          // 4. Display found building
-          const newBuildingLayer = L.geoJSON(newBuildingGeoJSON, {
+          L.geoJSON(newBuildingGeoJSON, {
             style: {
-              color: "#ff00ff", // Magenta for selected buildings
+              color: "#ff00ff",
               weight: 3,
               opacity: 1,
               fillOpacity: 0.3,
             },
-          }).addTo(buildingMarkers); // Add to the feature group
+          }).addTo(buildingMarkers);
 
           updatePredictionButton();
-
-          // 7. Map view is NOT fitted to avoid jumpiness
         } catch (error) {
-          // --- Check if the error was an intentional abort ---
-          if (error.name === "AbortError") {
-            console.log("Find building request was aborted.");
-            return;
-          }
+          if (error.name === "AbortError") return;
+          console.error("Building search failed", error);
         }
       }
 
-      // --- Sequential Prediction Function for Multiple Buildings ---
+      // --- Sequential Prediction Function ---
       async function runAllPredictions() {
         if (selectedBuildingGeoJSONs.length === 0) return;
 
-        // 1. Setup and clear
         const overlay = document.getElementById("loader-overlay");
         overlay.style.display = "flex";
         const loaderText = document.getElementById("loader-text");
 
-        // Cancel any pending prediction request (just in case)
         runPredictionController.abort();
         runPredictionController = new AbortController();
         const runPredictionSignal = runPredictionController.signal;
 
-        // Clear old prediction layers from map and control
+        // Clear old prediction layers
         currentPredictionLayerControlEntries.forEach((layer) => {
           layerControl.removeLayer(layer);
-          map.removeLayer(layer); // Ensure all master groups are removed
+          map.removeLayer(layer);
         });
         currentPredictionLayerControlEntries = [];
         predictionLayerGroups = {};
-
-        // Clear only the building outlines to prepare for fresh result labels?
-        // Actually, we usually want to clear everything to avoid duplicates.
         buildingMarkers.clearLayers();
 
-        let allBounds = []; // To collect bounds for final map fit
-
-        // Get the state of the uncertainty toggle
+        let allBounds = [];
         const calcUncertainty =
           document.getElementById("uncertainty-toggle").checked;
 
-        // 2. Loop through all selected buildings
         try {
           for (let i = 0; i < selectedBuildingGeoJSONs.length; i++) {
             const buildingGeoJSON = selectedBuildingGeoJSONs[i];
@@ -350,34 +322,25 @@
               selectedBuildingGeoJSONs.length
             }...`;
 
-            // 3. Call prediction API
             const response = await fetch("/api/predict", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 building_geojson: buildingGeoJSON,
-                calculate_uncertainty: calcUncertainty, // <--- Pass the flag here
+                calculate_uncertainty: calcUncertainty,
               }),
               signal: runPredictionSignal,
             });
 
-            if (!response.ok) {
-              const err = await response.json();
-              console.error(`Prediction ${i + 1} failed: ${err.message}`);
-              continue; // Continue to next building if one fails
-            }
+            if (!response.ok) continue;
 
             const data = await response.json();
-
-            // 4. Add new layers to the master LayerGroups
-            const bounds = data.bounds; // [[miny, minx], [maxy, maxx]]
+            const bounds = data.bounds;
             allBounds.push(bounds);
 
-            // Add all returned layers
             for (const key in data.layers) {
               const url = data.layers[key];
 
-              // Initialize the master LayerGroup if it doesn't exist
               if (!predictionLayerGroups[key]) {
                 predictionLayerGroups[key] = L.layerGroup();
               }
@@ -388,29 +351,28 @@
                 className: "leaflet-overlay-pixelated",
               });
 
-              // Add the new building-specific image overlay to its master group
               predictionLayerGroups[key].addLayer(newLayer);
             }
 
-            // --- NEW: Add Classification Feedback (Tooltip) ---
             if (data.classification) {
               const result = data.classification;
-
-              // Calculate center for the label
               const centerLat = (bounds[0][0] + bounds[1][0]) / 2;
               const centerLng = (bounds[0][1] + bounds[1][1]) / 2;
 
-              const statusColor = result.is_pv ? "#28a745" : "#dc3545"; // Green / Red
+              // Since your backend might return result.score directly now
+              const score = result.score;
+              const isPV = score >= 0.5;
+              const statusColor = isPV ? "#28a745" : "#dc3545";
 
               const tooltipContent = `
                         <div style="text-align: center; line-height: 1.2;">
-                            <strong style="color: ${statusColor}; font-size: 13px;">${result.text}</strong><br>
-                            <span style="font-size: 11px; color: #555;">Score: ${result.score}</span>
+                            <strong style="color: ${statusColor}; font-size: 13px;">${
+                isPV ? "PV Detected" : "No PV"
+              }</strong><br>
+                            <span style="font-size: 11px; color: #555;">Score: ${score}</span>
                         </div>
                     `;
 
-              // Create an invisible marker to anchor the tooltip
-              // We add it to 'buildingMarkers' so it gets cleared automatically when the user clicks elsewhere
               L.marker([centerLat, centerLng], {
                 opacity: 0,
                 interactive: false,
@@ -423,65 +385,47 @@
                 })
                 .addTo(buildingMarkers);
             }
-            // ---------------------------------------------------
-          } // End of loop
+          }
 
-          // 5. Update Layer Control (only once after the loop)
-          let firstLayerKey = null;
+          // Update Layer Control - Map layer keys to Pretty Names
+          const keyMap = {
+            pv_probability: "PV Probability",
+            sentinel_true_color: "Sentinel RGB",
+            di: "Dissimilarity Index (DI)",
+            lpd: "Local Point Density (LPD)",
+            dissimilarity_index: "Dissimilarity Index (DI)",
+            local_point_density: "Local Point Density (LPD)",
+          };
 
           for (const key in predictionLayerGroups) {
             const layerGroup = predictionLayerGroups[key];
-
-            // Clean up key name for display
-            const displayName = key
-              .replace(/_/g, " ")
-              .replace(/\b\w/g, (c) => c.toUpperCase());
+            const displayName =
+              keyMap[key] || key.replace(/_/g, " ").toUpperCase();
 
             layerControl.addOverlay(layerGroup, displayName);
             currentPredictionLayerControlEntries.push(layerGroup);
 
-            // Set 'pv_probability' to be checked (added to map) by default
+            // Default visible layers
             if (key === "pv_probability") {
               layerGroup.addTo(map);
             }
           }
 
-          // 6. Fit map to encompassing bounds of all predictions
           if (allBounds.length > 0) {
-            // Calculate the union of all bounding boxes
-            let minX = allBounds[0][0][1];
-            let minY = allBounds[0][0][0];
-            let maxX = allBounds[0][1][1];
-            let maxY = allBounds[0][1][0];
-
-            allBounds.forEach((b) => {
-              minY = Math.min(minY, b[0][0]);
-              minX = Math.min(minX, b[0][1]);
-              maxY = Math.max(maxY, b[1][0]);
-              maxX = Math.max(maxX, b[1][1]);
-            });
-
-            const unifiedBounds = L.latLngBounds([
-              [minY, minX],
-              [maxY, maxX],
-            ]);
-            map.fitBounds(unifiedBounds, { padding: [50, 50] });
+            let bnds = L.latLngBounds(allBounds[0]);
+            allBounds.forEach((b) => bnds.extend(b));
+            map.fitBounds(bnds, { padding: [50, 50] });
           }
 
-          // Clear selected GEOJSONs list, but we KEEP the markers/tooltips on screen
           selectedBuildingGeoJSONs = [];
           updatePredictionButton();
         } catch (error) {
-          if (error.name === "AbortError") {
-            console.log("Prediction run was aborted.");
-            return;
-          }
-          console.error("Error running predictions:", error);
+          if (error.name === "AbortError") return;
+          console.error("Prediction failed:", error);
           alert(`Prediction Failed:\n${error.message}`);
         } finally {
-          // This always runs, even if aborted
           overlay.style.display = "none";
-          loaderText.textContent = "Running prediction..."; // Reset text
+          loaderText.textContent = "Running prediction...";
         }
       }
     </script>
