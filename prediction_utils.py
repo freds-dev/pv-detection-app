@@ -43,25 +43,39 @@ def sign_asset(href: str) -> str:
     return pc.sign(href) if HAVE_PC else href
 
 
-def run_r_script(script_path: str, working_dir: str):
+def run_r_script(script_path, session_dir):
+    """
+    Runs an R script using Rscript and passes the session directory as an argument.
+    """
+    import subprocess
+    import os
+
     if not os.path.exists(script_path):
-        LOGGER.error(f"R script not found at: {script_path}")
+        print(f"ERROR: R script not found at: {script_path}")
         return False
-    LOGGER.info(f"Running R script: {script_path} in dir: {working_dir}...")
+
     try:
-        # Run the script from a specific working directory
+        print(
+            f"INFO: Running R script: {script_path} for session: {session_dir}")
+
+        # We pass session_dir as an argument so R can pick it up with commandArgs()
         result = subprocess.run(
-            ["Rscript", script_path], check=True, capture_output=True, text=True, cwd=working_dir)
-        LOGGER.info("R script executed successfully.")
+            ['Rscript', script_path, session_dir],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Log R's output to your Python terminal so you can see your 'message()' calls
         if result.stdout:
-            LOGGER.info("--- R Script Output ---\n" + result.stdout)
+            print(f"R Output:\n{result.stdout}")
+
         return True
-    except FileNotFoundError:
-        LOGGER.error(
-            "'Rscript' command not found. Is R installed and in your system's PATH?")
-        return False
+
     except subprocess.CalledProcessError as e:
-        LOGGER.error(f"The R script failed to execute.\nStderr: {e.stderr}")
+        print(f"ERROR: The R script failed to execute.")
+        print(f"Stderr: {e.stderr}")
+        print(f"Stdout: {e.stdout}")
         return False
 
 
@@ -152,33 +166,29 @@ def read_bands_to_grid(item, band_names: List[str], bbox_target: Tuple[float, fl
     return arrays, transform, dst_crs
 
 
-def assemble_features(model, band_arrays: Dict[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
-    H, W = next(iter(band_arrays.values())).shape
-    feature_names = list(getattr(model, "feature_names_in_", []))
-    if not feature_names:
-        raise RuntimeError("Model is missing feature_names_in_.")
-    stack = []
+def assemble_features(model, band_arrays, feature_list=None):
+    """
+    Stacks band arrays into a 2D feature matrix (N_pixels, N_features).
+    """
+    # 1. Determine which features to use
+    if feature_list is not None:
+        feature_names = feature_list
+    elif model is not None and hasattr(model, "feature_names_in_"):
+        feature_names = list(model.feature_names_in_)
+    else:
+        # Fallback to just the bands present in the dictionary
+        feature_names = sorted(band_arrays.keys())
 
-    # Note: Removed index calculation as requested
+    # 2. Extract and stack the data
+    # We ensure they are flattened in the same order as feature_names
+    try:
+        stacked_data = np.stack([band_arrays[name].flatten()
+                                for name in feature_names], axis=1)
+    except KeyError as e:
+        raise KeyError(
+            f"Missing band in band_arrays: {e}. Check if STAC returned all requested bands.")
 
-    for name in feature_names:
-        if name in band_arrays:
-            stack.append(band_arrays[name].ravel())
-        elif name in ("x", "y"):
-            # This logic seems to be for pixel coordinates, which might not be a feature
-            # If 'x' and 'y' are not in your model, you can remove this block.
-            LOGGER.warning(
-                f"Feature '{name}' not found, generating coordinate grid.")
-            ys, xs = np.indices((H, W))
-            stack.append(
-                (xs if name == "x" else ys).ravel().astype(np.float32))
-        else:
-            # Fill with NaN if a feature is missing from STAC bands
-            LOGGER.error(
-                f"Feature '{name}' not in STAC bands. Filling with NaN.")
-            stack.append(np.full(H * W, np.nan, dtype=np.float32))
-
-    return np.vstack(stack).T, feature_names
+    return stacked_data, feature_names
 
 
 def predict_mask(model, X, shape: Tuple[int, int], threshold: float) -> Tuple[np.ndarray, np.ndarray]:
