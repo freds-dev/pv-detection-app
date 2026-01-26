@@ -11,7 +11,7 @@ from sklearn.metrics import roc_curve, auc, accuracy_score, confusion_matrix
 
 # --- Settings ---
 RESULTS_PATH = "data/artifacts/validation_results.csv"
-TRAINING_PATH = "data/training/training.csv"  # Need this for the coordinates!
+TRAINING_PATH = "data/training/training.csv"
 ERROR_GPKG_PATH = "data/artifacts/worst_guesses.gpkg"
 
 # Setup
@@ -22,8 +22,8 @@ DB_URL = f"postgresql+psycopg2://{CFG['database']['user']}:{CFG['database']['pas
 ENGINE = create_engine(DB_URL)
 
 
-def export_worst_guesses_spatial(df, num_errors=25):
-    """Identifies errors and requests full polygons from the DB."""
+def export_worst_guesses_spatial(df, threshold=0.71):
+    """Identifies both high-confidence False Positives and missed False Negatives."""
     # 1. Merge with training data to get 'lon' and 'lat' back
     print("🔗 Merging results with training coordinates...")
     df_train = pd.read_csv(TRAINING_PATH, usecols=[
@@ -31,17 +31,26 @@ def export_worst_guesses_spatial(df, num_errors=25):
     df_train['parent_poly_id'] = df_train['parent_poly_id'].astype(str)
     df['poly_id'] = df['poly_id'].astype(str)
 
-    # Merge on the ID
     df = df.merge(df_train, left_on='poly_id',
                   right_on='parent_poly_id', how='left')
 
-    print(f"🛰️ Requesting {num_errors*2} worst polygons from the database...")
+    # 2. Filter for both types of errors
+    # FP: Reality is 0, Prediction score is high
+    fps = df[(df['ground_truth'] == 0) & (df['score'] >= threshold)].copy()
+    fps['error_type'] = 'False Positive'
 
-    fps = df[df['ground_truth'] == 0].nlargest(num_errors, 'score').copy()
-    fns = df[df['ground_truth'] == 1].nsmallest(num_errors, 'score').copy()
+    # FN: Reality is 1, Prediction score is low
+    fns = df[(df['ground_truth'] == 1) & (df['score'] < threshold)].copy()
+    fns['error_type'] = 'False Negative'
+
     worst_df = pd.concat([fps, fns])
-    worst_df['error_type'] = np.where(
-        worst_df['ground_truth'] == 0, 'False Positive', 'False Negative')
+
+    print(
+        f"🛰️ Requesting {len(fps)} FPs and {len(fns)} FNs from the database...")
+
+    if worst_df.empty:
+        print("⚠️ No errors found matching the threshold criteria.")
+        return
 
     tbl = CFG['database']['footprints_table']
     geom_col = CFG['database']['geometry_column']
@@ -49,7 +58,6 @@ def export_worst_guesses_spatial(df, num_errors=25):
 
     with ENGINE.connect() as conn:
         for _, row in worst_df.iterrows():
-            # NOTE: We use 3857 here because your CSV coordinates are in meters!
             query = text(f"""
                 SELECT ST_AsGeoJSON(ST_Transform({geom_col}, 4326))
                 FROM {tbl} 
@@ -85,12 +93,11 @@ def export_worst_guesses_spatial(df, num_errors=25):
         os.makedirs(os.path.dirname(ERROR_GPKG_PATH), exist_ok=True)
         gdf.to_file(ERROR_GPKG_PATH, driver="GPKG")
         print(
-            f"✅ Success! {len(gdf)} worst polygons exported to: {ERROR_GPKG_PATH}")
+            f"✅ Success! {len(gdf)} total error polygons exported to: {ERROR_GPKG_PATH}")
 
 
 def analyze_and_plot(df):
     """Statistical and visual analysis."""
-    # Check if we have standard ground_truth naming
     if 'ground_truth' not in df.columns and 'label' in df.columns:
         df = df.rename(columns={'label': 'ground_truth'})
 
@@ -108,7 +115,7 @@ def analyze_and_plot(df):
     print(f"AUC: {roc_auc:.4f} | Optimal Threshold (Max Acc): {best_acc_thr:.4f}")
     print("═"*60)
 
-    # Binning
+    # Binning by size
     bins = [0, 100, 200, 500, 1000, 5000, 1000000]
     labels = ['<100', '100-200', '200-500', '500-1k', '1k-5k', '>5k']
     df['size_bin'] = pd.cut(df['area_sqm'], bins=bins, labels=labels)
@@ -118,24 +125,25 @@ def analyze_and_plot(df):
         g = df[df['size_bin'] == label]
         if len(g) > 0:
             relevant = (g['ground_truth'] == 1).sum()
-            rec = (((g['score'] >= best_acc_thr).astype(int) == 1) & (
+            # Recall at the specific chosen 0.71 threshold
+            rec = (((g['score'] >= 0.71).astype(int) == 1) & (
                 g['ground_truth'] == 1)).sum() / relevant if relevant > 0 else np.nan
             size_stats.append({'Bin': label, 'Recall': rec, 'N': len(g)})
 
     size_stats_df = pd.DataFrame(size_stats)
     print(size_stats_df.set_index('Bin').to_string())
 
-    # Pack the worst polygons (Spatial step)
-    export_worst_guesses_spatial(df)
+    # Pack the error polygons
+    export_worst_guesses_spatial(df, threshold=0.71)
 
     # Plotting
     fig, axes = plt.subplots(1, 3, figsize=(22, 6))
-    y_pred = (y_score >= best_acc_thr).astype(int)
+    y_pred = (y_score >= 0.71).astype(int)
 
     sns.heatmap(confusion_matrix(y_true, y_pred), annot=True,
                 fmt='d', cmap='Blues', ax=axes[0], cbar=False)
     axes[0].set_title(
-        f"Confusion Matrix\n(Acc: {accuracies[best_acc_idx]:.2%})")
+        f"Confusion Matrix @ 0.71\n(Acc: {accuracy_score(y_true, y_pred):.2%})")
 
     sns.barplot(data=size_stats_df, x='Bin', y='Recall',
                 palette="viridis", ax=axes[1])
@@ -147,7 +155,7 @@ def analyze_and_plot(df):
                  label=f'ROC (AUC = {roc_auc:.3f})')
     axes[2].plot([0, 1], [0, 1], color='navy', lw=1, linestyle='--')
     axes[2].scatter(best_fpr, best_tpr, color='red', s=50,
-                    label=f'Opt. Thr: {best_acc_thr:.2f}')
+                    label=f'Best Thr: {best_acc_thr:.2f}')
     axes[2].set_title('ROC Curve')
     axes[2].legend(loc="lower right")
 

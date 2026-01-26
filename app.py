@@ -50,7 +50,7 @@ except Exception as e:
 
 # --- Load Model ---
 # The MODEL variable is kept as None to maintain compatibility with utility functions.
-THRESHOLD = 0.613
+THRESHOLD = 0.715
 MODEL = None
 
 # Check if the R model exists before starting the app to avoid runtime crashes
