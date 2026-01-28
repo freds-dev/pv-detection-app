@@ -43,39 +43,13 @@ def sign_asset(href: str) -> str:
     return pc.sign(href) if HAVE_PC else href
 
 
-def run_r_script(script_path, session_dir):
-    """
-    Runs an R script using Rscript and passes the session directory as an argument.
-    """
-    import subprocess
-    import os
-
-    if not os.path.exists(script_path):
-        print(f"ERROR: R script not found at: {script_path}")
-        return False
-
+def run_r_script(script_path, session_dir, run_aoa=False):
+    aoa_flag = "TRUE" if run_aoa else "FALSE"
     try:
-        print(
-            f"INFO: Running R script: {script_path} for session: {session_dir}")
-
-        # We pass session_dir as an argument so R can pick it up with commandArgs()
-        result = subprocess.run(
-            ['Rscript', script_path, session_dir],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        # Log R's output to your Python terminal so you can see your 'message()' calls
-        if result.stdout:
-            print(f"R Output:\n{result.stdout}")
-
+        # Note the three arguments after Rscript
+        subprocess.run(['Rscript', script_path, session_dir, aoa_flag], check=True)
         return True
-
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: The R script failed to execute.")
-        print(f"Stderr: {e.stderr}")
-        print(f"Stdout: {e.stdout}")
+    except:
         return False
 
 

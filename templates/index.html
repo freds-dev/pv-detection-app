@@ -356,7 +356,7 @@
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 building_geojson: buildingGeoJSON,
-                calculate_uncertainty: calcUncertainty, // <--- Pass the flag here
+                include_aoa: calcUncertainty,
               }),
               signal: runPredictionSignal,
             });
