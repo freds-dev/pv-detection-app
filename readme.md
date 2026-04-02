@@ -80,8 +80,8 @@ Before you begin, ensure the following software is installed on your system:
 
 Clone this repository to your local machine:
 ```bash
-git clone <your-repository-url>
-cd <your-project-name>
+git clone https://github.com/freds-dev/pv-detection-app
+cd pv-detection-app
 ```
 
 ### Step 2: Database Setup (PostGIS)
