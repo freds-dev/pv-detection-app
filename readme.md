@@ -1,12 +1,6 @@
 # Interactive PV Prediction Map
 
-Full-stack application for rooftop PV suitability prediction using Sentinel-2 imagery, Random Forest models, and spatial reliability metrics (DI/LPD).
-
-## Technical Features
-- **Frontend:** Interactive Leaflet.js map with multi-selection support and real-time streaming progress updates.
-- **Backend:** Flask (Python) server handling STAC-based imagery retrieval (Planetary Computer) and R-based spatial analysis.
-- **Database:** PostGIS for high-performance k-NN spatial queries on building footprints.
-- **Analysis:** On-the-fly prediction with Random Forest and uncertainty assessment via Dissimilarity Index (DI) and Local Point Density (LPD).
+Application for industiral rooftop PV prediction using Sentinel-2 imagery and Random Forest models.
 
 ## Project Structure
 - `app.py`: Flask server & API.
