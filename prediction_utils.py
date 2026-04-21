@@ -19,7 +19,6 @@ from pystac_client import Client
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-# --- Global Setup ---
 warnings.filterwarnings("ignore")
 LOGGER = logging.getLogger("pv-predictor-util")
 
@@ -27,8 +26,6 @@ try:
     HAVE_PC = True
 except Exception:
     HAVE_PC = False
-
-# --- Helper Functions (Copied & Adapted from your script) ---
 
 
 def setup_logging(level=logging.INFO) -> None:
@@ -46,8 +43,8 @@ def sign_asset(href: str) -> str:
 def run_r_script(script_path, session_dir, run_aoa=False):
     aoa_flag = "TRUE" if run_aoa else "FALSE"
     try:
-        # Note the three arguments after Rscript
-        subprocess.run(['Rscript', script_path, session_dir, aoa_flag], check=True)
+        subprocess.run(
+            ['Rscript', script_path, session_dir, aoa_flag], check=True)
         return True
     except:
         return False
@@ -144,17 +141,13 @@ def assemble_features(model, band_arrays, feature_list=None):
     """
     Stacks band arrays into a 2D feature matrix (N_pixels, N_features).
     """
-    # 1. Determine which features to use
     if feature_list is not None:
         feature_names = feature_list
     elif model is not None and hasattr(model, "feature_names_in_"):
         feature_names = list(model.feature_names_in_)
     else:
-        # Fallback to just the bands present in the dictionary
         feature_names = sorted(band_arrays.keys())
 
-    # 2. Extract and stack the data
-    # We ensure they are flattened in the same order as feature_names
     try:
         stacked_data = np.stack([band_arrays[name].flatten()
                                 for name in feature_names], axis=1)
@@ -179,57 +172,52 @@ def save_png_rgb(bands: Dict[str, np.ndarray], out_png: str) -> None:
     """
     r, g, b = bands["B04"], bands["B03"], bands["B02"]
 
-    # Fill any NaN (missing data) pixels with 0 (black) before processing.
-    # This is safer for percentile calculations and image stacking.
     r = np.nan_to_num(r, nan=0.0)
     g = np.nan_to_num(g, nan=0.0)
     b = np.nan_to_num(b, nan=0.0)
 
     enhanced_bands = []
 
-    # Apply enhancement to each band *independently*
     for band in [r, g, b]:
-        # 1. Find the 2nd and 98th percentiles (dynamic contrast stretch)
-        # This clips the darkest 2% and brightest 2% of pixels
         vmin, vmax = np.percentile(band, [2, 98])
 
-        # 2. Normalize the band to 0-1
         if vmin == vmax:
-            vmax = vmin + 1  # Avoid division by zero in blank images
+            vmax = vmin + 1  
         band_norm = (band - vmin) / (vmax - vmin)
 
-        # 3. Clip to 0-1 range
         band_norm = np.clip(band_norm, 0, 1)
 
-        # 4. Apply Gamma Correction (makes darks/mid-tones look more natural)
-        # A gamma of 1/2.2 (approx 0.45) is a common standard.
         band_gamma = band_norm ** (1/2.2)
 
-        # 5. Scale to 0-255 for the 8-bit PNG
         band_uint8 = (band_gamma * 255).astype(np.uint8)
         enhanced_bands.append(band_uint8)
 
-    # 6. Stack the enhanced R, G, B bands into a single 3D array
     rgb_image = np.dstack(enhanced_bands)
 
-    # 7. Save the final image
     Image.fromarray(rgb_image).save(out_png)
 
 
-def save_png_heatmap(proba: np.ndarray, out_png: str) -> None:
-    norm = mcolors.Normalize(vmin=0, vmax=1)
-    cmap = mcolors.LinearSegmentedColormap.from_list(
-        "pv_heat", ["green", "yellow", "red"])
+def save_png_heatmap(
+    proba: np.ndarray, 
+    out_png: str, 
+    cmap_name: str = "RdYlGn", 
+    vmin: float = 0.0, 
+    vmax: float = 1.0
+) -> None:
+    if vmin == vmax:
+        vmax = vmin + 1.0  
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = plt.get_cmap(cmap_name)
     rgba = cmap(norm(proba))
-    rgba[np.isnan(proba), 3] = 0  # Transparent NaN
-    rgba[..., 3] = rgba[..., 3] * 0.8  # Apply 80% opacity
+    rgba[np.isnan(proba), 3] = 0  
+    rgba[..., 3] = rgba[..., 3] * 0.8  
     Image.fromarray((rgba * 255).astype(np.uint8)).save(out_png)
 
 
 def save_footprints_as_png(mask: np.ndarray, out_png: str) -> None:
     H, W = mask.shape
     rgba = np.zeros((H, W, 4), dtype=np.uint8)
-    rgba[mask == 1] = np.array([255, 255, 0, 150], dtype=np.uint8)  # Yellow
+    rgba[mask == 1] = np.array([255, 255, 0, 150], dtype=np.uint8)  
     Image.fromarray(rgba).save(out_png)
 
 
@@ -238,11 +226,35 @@ def get_aoi_from_building_geom(building_geom, target_epsg: int, buffer_m: float)
     gdf = gpd.GeoDataFrame([{'geometry': building_geom}], crs=4326)
     gdf_target_crs = gdf.to_crs(epsg=target_epsg)
 
-    # Apply buffer in the target CRS (which should be metric)
     gdf_buffered = gdf_target_crs.buffer(buffer_m)
 
-    # Get bounds for STAC search (in 4326) and prediction (in target_epsg)
     bbox_4326 = tuple(gdf_buffered.to_crs(4326).total_bounds)
     bbox_target = tuple(gdf_buffered.total_bounds)
 
     return gdf_buffered, bbox_target, bbox_4326
+
+
+def save_png_swir(band_arrays, output_path):
+    """
+    Creates a SWIR composite PNG using B12 (Red), B11 (Green), and B08 (Blue)
+    with dynamic contrast enhancement (percentile stretching).
+    """
+    r = band_arrays.get('B12')
+    g = band_arrays.get('B11')
+    b = band_arrays.get('B08')
+
+    r = np.nan_to_num(r, nan=0.0)
+    g = np.nan_to_num(g, nan=0.0)
+    b = np.nan_to_num(b, nan=0.0)
+
+    enhanced_bands = []
+    for band in [r, g, b]:
+        vmin, vmax = np.percentile(band, [2, 98])
+        if vmin == vmax:
+            vmax = vmin + 0.1
+        band_norm = np.clip((band - vmin) / (vmax - vmin), 0, 1)
+        band_gamma = band_norm ** (1/1.5)
+        enhanced_bands.append((band_gamma * 255).astype(np.uint8))
+
+    rgb = np.dstack(enhanced_bands)
+    Image.fromarray(rgb).save(output_path)

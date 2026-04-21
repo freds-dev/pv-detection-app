@@ -12,7 +12,6 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.metrics import roc_curve, auc, accuracy_score, confusion_matrix
 
-# --- Settings ---
 API_URL = "http://localhost:5000/api/predict"
 OUTPUT_PATH = "data/artifacts/validation_results.csv"
 TRAINING_DATA_PATH = "data/training/training.csv"
@@ -20,7 +19,6 @@ META_PATH = "data/artifacts/validate_binary_classification/test_metadata.json"
 MAX_WORKERS = 4
 RETRIES = 2
 
-# Setup Database
 with open("config.yaml", "r") as f:
     CFG = yaml.safe_load(f)
 
@@ -33,7 +31,6 @@ def get_building_data(lon, lat):
     tbl = CFG['database']['footprints_table']
     geom_col = CFG['database']['geometry_column']
 
-    # We transform the CSV point (3857) to the native SRID of your database table
     query = text(f"""
         SELECT 
             ST_AsGeoJSON(ST_Transform({geom_col}, 4326)),
@@ -60,9 +57,7 @@ def validate_single_row(row):
     poly_id = str(row['parent_poly_id'])
     geojson, area_sqm = get_building_data(row['lon'], row['lat'])
 
-    # If the spatial query fails, we can't predict.
     if not geojson:
-        # tqdm.write(f"🔍 Skip: No building found in DB for {poly_id} at {row['lon']}, {row['lat']}")
         return {"skip": True}
 
     for attempt in range(RETRIES):
@@ -132,7 +127,6 @@ def analyze_and_plot(df):
 
 
 def run_validation():
-    # 1. Load Metadata
     if not os.path.exists(META_PATH):
         print(f"❌ Error: {META_PATH} not found.")
         return
@@ -140,7 +134,6 @@ def run_validation():
         meta = json.load(f)
     test_ids = set(str(x) for x in meta['test_polygons'])
 
-    # 2. Setup Resume
     processed_ids = set()
     all_results = []
     if os.path.exists(OUTPUT_PATH) and os.path.getsize(OUTPUT_PATH) > 0:
@@ -154,7 +147,6 @@ def run_validation():
         except Exception:
             os.remove(OUTPUT_PATH)
 
-    # 3. Load Training Data
     df_train = pd.read_csv(TRAINING_DATA_PATH, on_bad_lines='skip')
     df_train['parent_poly_id'] = df_train['parent_poly_id'].astype(str)
 
@@ -170,7 +162,6 @@ def run_validation():
             analyze_and_plot(pd.DataFrame(all_results))
         return
 
-    # 4. Processing Loop
     skipped_count = 0
     try:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:

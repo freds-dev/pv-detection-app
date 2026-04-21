@@ -9,13 +9,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_curve, auc, accuracy_score, confusion_matrix
 
-# --- Settings ---
 RESULTS_PATH = "data/artifacts/validation_results.csv"
 TRAINING_PATH = "data/training/training.csv"
 ERROR_GPKG_PATH = "data/artifacts/worst_guesses.gpkg"
 PLOT_EXPORT_PATH = "output/plots"
 
-# Setup
 with open("config.yaml", "r") as f:
     CFG = yaml.safe_load(f)
 
@@ -112,7 +110,6 @@ def analyze_and_plot(df):
     print(f"AUC: {roc_auc:.4f} | Optimal Threshold (Max Acc): {best_acc_thr:.4f}")
     print("═"*60)
 
-    # Binning by size
     bins = [0, 100, 200, 500, 1000, 5000, 1000000]
     labels = ['<100', '100-200', '200-500', '500-1k', '1k-5k', '>5k']
     df['size_bin'] = pd.cut(df['area_sqm'], bins=bins, labels=labels)
@@ -131,26 +128,21 @@ def analyze_and_plot(df):
 
     export_worst_guesses_spatial(df, threshold=0.71)
 
-    # --- Plotting ---
-    # Set style for cleaner transparent plots
     sns.set_style("white")
     fig, axes = plt.subplots(1, 3, figsize=(22, 6))
     y_pred = (y_score >= 0.71).astype(int)
 
-    # 1. Confusion Matrix
     sns.heatmap(confusion_matrix(y_true, y_pred), annot=True,
                 fmt='d', cmap='Blues', ax=axes[0], cbar=False)
     axes[0].set_title(
         f"Confusion Matrix @ 0.71\n(Acc: {accuracy_score(y_true, y_pred):.2%})")
 
-    # 2. Recall by Size
     sns.barplot(data=size_stats_df, x='Bin', y='Recall',
                 palette="viridis", ax=axes[1])
     axes[1].axhline(best_tpr, color='red', linestyle='--')
     axes[1].set_title("Recall by Building Size")
     axes[1].set_ylim(0, 1.1)
 
-    # 3. ROC Curve
     axes[2].plot(fpr, tpr, color='darkorange', lw=2,
                  label=f'ROC (AUC = {roc_auc:.3f})')
     axes[2].plot([0, 1], [0, 1], color='navy', lw=1, linestyle='--')
@@ -161,15 +153,11 @@ def analyze_and_plot(df):
 
     plt.tight_layout()
 
-    # --- Export ---
     os.makedirs(PLOT_EXPORT_PATH, exist_ok=True)
 
-    # Save combined figure
     full_plot_path = os.path.join(PLOT_EXPORT_PATH, "validation_summary.png")
     fig.savefig(full_plot_path, transparent=True, dpi=300, bbox_inches='tight')
 
-    # Optional: Save just the ROC curve as a single image
-    # We do this by creating a new small figure for just that axis
     roc_fig, roc_ax = plt.subplots(figsize=(6, 6))
     roc_ax.plot(fpr, tpr, color='darkorange', lw=2,
                 label=f'ROC (AUC = {roc_auc:.3f})')

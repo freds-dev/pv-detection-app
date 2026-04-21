@@ -1,9 +1,9 @@
-library(ranger)
+library(caret)
 library(CAST)
+library(ranger)
 library(jsonlite)
 
-# --- 1. SETUP ---
-message("--- Starting R Prediction & AOA Script ---")
+message("--- Starting Optimized Prediction & AOA Script ---")
 args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) < 2) {
@@ -13,44 +13,59 @@ if (length(args) < 2) {
 session_dir <- args[1]
 run_aoa     <- as.logical(args[2])
 
+project_root <- "/Users/fred/Documents/uni/thesis/prediction-app"
+model_path   <- file.path(project_root, "data/artifacts/rf/model_final.rds")
+train_path   <- file.path(project_root, "data/training/training.csv")
+
 message(paste("Session Directory:", session_dir))
-message(paste("AOA Requested:", run_aoa))
 setwd(session_dir)
 
-# --- 2. LOAD CORE ARTIFACTS ---
-model_path  <- "../../../data/artifacts/rf/model_final.rds"
-di_ref_path <- "../../../data/artifacts/rf/train_di_ref.rds"
-
-if (!file.exists(model_path)) stop(paste("Model not found at:", model_path))
-
+if (!file.exists(model_path)) stop(paste("Model file missing:", model_path))
 model_caret <- readRDS(model_path)
-features    <- read.csv("prediction_features.csv")
 
-# --- 3. RUN PREDICTION (Always) ---
-message("Executing Random Forest inference...")
-final_model <- if(inherits(model_caret, "train")) model_caret$finalModel else model_caret
-pred_obj    <- predict(final_model, data = features)
-write.csv(pred_obj$predictions, "prediction_results.csv", row.names = FALSE)
+if (!file.exists("prediction_features.csv")) stop("prediction_features.csv not found in session dir.")
+features <- read.csv("prediction_features.csv")
+
+predictor_names <- c("B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12")
+
+message("Executing Inference...")
+
+probs <- predict(model_caret, newdata = features, type = "prob")
+
+output_preds <- data.frame(X1 = probs$X1)
+write.csv(output_preds, "prediction_results.csv", row.names = FALSE)
 
 if (run_aoa) {
-  # Load the precomputed reference instead of the full training CSV
-  train_di_ref <- readRDS("../../../data/artifacts/rf/train_di_ref.rds")
-  
-  # Calculate DI, LPD, and AOA simultaneously
-  aoa_results <- aoa(
-    newdata = features, 
-    model = model_caret, 
-    trainDI = train_di_ref, 
-    LPD = TRUE
-  )
-  
-  # Save all metrics for Python to process
-  metrics_df <- data.frame(
-    DI = aoa_results$DI,
-    LPD = aoa_results$LPD,
-    AOA = aoa_results$AOA
-  )
-  write.csv(metrics_df, "spatial_metrics.csv", row.names = FALSE)
+  if (!file.exists(train_path)) {
+    message("WARNING: Training CSV missing. Skipping AOA.")
+  } else {
+    message("Computing AOA and LPD from scratch using kNNDM folds...")
+    
+    train_dat <- read.csv(train_path)
+    
+    missing_cols <- setdiff(predictor_names, names(train_dat))
+    if(length(missing_cols) > 0) {
+      stop(paste("Training CSV is missing required bands:", paste(missing_cols, collapse=", ")))
+    }
+
+    aoa_results <- aoa(
+      newdata = features[, predictor_names],
+      model = model_caret,
+      train = train_dat[, predictor_names],
+      LPD = TRUE,
+      verbose = TRUE
+    )
+    
+    metrics_df <- data.frame(
+      DI = aoa_results$DI,
+      LPD = aoa_results$LPD,
+      AOA = aoa_results$AOA
+    )
+    
+    write.csv(metrics_df, "spatial_metrics.csv", row.names = FALSE)
+    
+    message(paste("AOA Threshold Applied (kNNDM):", round(aoa_results$parameters$threshold, 4)))
+  }
 }
 
 message("--- R Script Finished Successfully ---")
