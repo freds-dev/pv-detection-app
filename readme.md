@@ -1,4 +1,4 @@
-# Interactive PV Prediction Map
+# PV Prediction Application
 
 Application for industiral rooftop PV prediction using Sentinel-2 imagery and Random Forest models.
 
