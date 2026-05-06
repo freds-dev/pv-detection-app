@@ -193,7 +193,7 @@ def predict():
                 png_bounds[3], png_bounds[2]]]
 
             pu.save_png_heatmap(proba, os.path.join(
-                results_dir, "pv_probability.png"), cmap_name="RdYlGn")
+                results_dir, "pv_probability.png"), cmap_name="viridis")
             layer_urls['pv_probability'] = f"/{results_dir}/pv_probability.png"
 
             pu.save_png_rgb(band_arrays, os.path.join(
@@ -216,12 +216,12 @@ def predict():
 
                     di_data, di_min, di_max = get_masked_stats(r_metrics['DI'].values.astype(float))
                     pu.save_png_heatmap(di_data, os.path.join(
-                        results_dir, "dissimilarity_index.png"), cmap_name="RdYlGn_r", vmin=di_min, vmax=di_max)
+                        results_dir, "dissimilarity_index.png"), cmap_name="viridis_r", vmin=di_min, vmax=di_max)
                     layer_urls['dissimilarity_index_(DI)'] = f"/{results_dir}/dissimilarity_index.png"
 
                     lpd_data, lpd_min, lpd_max = get_masked_stats(r_metrics['LPD'].values.astype(float))
                     pu.save_png_heatmap(lpd_data, os.path.join(
-                        results_dir, "local_data_density.png"), cmap_name="RdYlGn_r", vmin=lpd_min, vmax=lpd_max)
+                        results_dir, "local_data_density.png"), cmap_name="viridis", vmin=lpd_min, vmax=lpd_max)
                     layer_urls['local_data_density_(LPD)'] = f"/{results_dir}/local_data_density.png"
 
             final_result = {

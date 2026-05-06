@@ -124,7 +124,7 @@
         text-align: center;
       }
       .legend-gradient {
-        background: linear-gradient(to right, #d7191c, #ffffbf, #1a9641); 
+        background: linear-gradient(to right, #440154, #21918c, #fde725); 
         width: 160px;
         height: 14px;
         margin-bottom: 4px;
@@ -132,7 +132,7 @@
         border-radius: 2px;
       }
       .legend-gradient-rev {
-        background: linear-gradient(to right, #1a9641, #ffffbf, #d7191c); 
+        background: linear-gradient(to right, #fde725, #21918c, #440154); 
         width: 160px;
         height: 14px;
         margin-bottom: 4px;
@@ -290,8 +290,8 @@
           className = "legend-gradient-rev"; 
         } else if (layerName.includes("(LPD)")) {
           title = "Local Point Density (LPD)";
-          labels = ["High (Good)", "Low (Sparse)"];
-          className = "legend-gradient-rev"; 
+          labels = ["Low (Sparse)", "High (Good)"];
+          className = "legend-gradient"; 
         } else {
           div.style.display = "none";
           return;
@@ -490,7 +490,7 @@
               const result = data.classification;
               const centerLat = (bounds[0][0] + bounds[1][0]) / 2;
               const centerLng = (bounds[0][1] + bounds[1][1]) / 2;
-              const statusColor = result.is_pv ? "#28a745" : "#dc3545";
+              const statusColor = result.is_pv ? "#0072B2" : "#D55E00";
 
               const tooltipContent = `
                         <div style="text-align: center; line-height: 1.2;">
